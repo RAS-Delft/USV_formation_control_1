@@ -17,12 +17,15 @@ import rospy
 import numpy as np
 import argparse
 import time
+import math
 from sensor_msgs.msg import NavSatFix
 from scipy import interpolate
 import pyproj
+from std_msgs.msg import Float32
+from geometry_msgs.msg import TransformStamped
 
 parser = argparse.ArgumentParser(description='get input of formation ID')
-parser.add_argument('formation_id', type=str, nargs=1,help='Identifier of the formation')
+parser.add_argument('name', type=str, nargs=1,help='Identifier of the formation')
 args, unknown = parser.parse_known_args()
 
 PERIOD_RECALCULATE_PATH = 40.0 # seconds
@@ -30,12 +33,13 @@ PERIOD_MOVE_REF = 0.10 # seconds
 PERIOD_BROADCAST_STATUS = 4.0 # seconds
 geodesic = pyproj.Geod(ellps='WGS84')
 
+
 class geo_euclidean_transforms():	
 	def d_northeast_to_d_latlong(dN,dE,lat_linearization):
 		"""
 		Transforms a small step in northeast tangent to earth surface in the difference in latitude longitude.
 		Note: 
-	    - This method approximates earth locally flat and may misbehave around earths prime meredian or poles. 
+		- This method approximates earth locally flat and may misbehave around earths prime meredian or poles. 
 		- Over long distances this method starts losing accuracy, but it works great and simple for small displacements. 
 		- Approximates earth as a sphere
 
@@ -57,7 +61,7 @@ class geo_euclidean_transforms():
 		"""
 		Transforms a small step in latitude longitude to northeast motion tangent to earth surface.
 		Note: 
-	    - This method approximates earth locally flat and may misbehave near earths prime meredian or poles. 
+		- This method approximates earth locally flat and may misbehave near earths prime meredian or poles. 
 		- Over long distances this method starts losing accuracy, but it works great and simple for small displacements. 
 		- Approximates earth as a sphere
 
@@ -74,7 +78,9 @@ class geo_euclidean_transforms():
 		dN = np.radians(dlat)*earth_radius
 		dE = np.radians(dlong)*r_lat
 		return dN, dE
-
+	
+	def r_surf(yaw):
+		return  np.array(((np.cos(yaw),-np.sin(yaw)),(np.sin(yaw),np.cos(yaw))))
 
 def B_spline(waypoints):
 	# Made according to guide at:
@@ -92,13 +98,75 @@ def B_spline(waypoints):
 	# tck is a tuple containing ths spline's knots, coefficients and degree defining our smoothed path
 
 	# make the smooth spline into a set of waypoints
-	u = np.linspace(0,1,num=200) # vector stating how far we are into our path
+	u = np.linspace(0,1,num=400) # vector stating how far we are into our path
 	smooth = interpolate.splev(u,tck)
 	return smooth
 
+def r_surf(yaw):
+    return  np.array(((np.cos(yaw),-np.sin(yaw)),(np.sin(yaw),np.cos(yaw))))
+
+def euler_from_quaternion(x, y, z, w):
+	"""
+	Convert a quaternion into euler angles (roll, pitch, yaw)
+	roll is rotation around x in radians (counterclockwise)
+	pitch is rotation around y in radians (counterclockwise)
+	yaw is rotation around z in radians (counterclockwise)
+	"""
+	t0 = +2.0 * (w * x + y * z)
+	t1 = +1.0 - 2.0 * (x * x + y * y)
+	roll_x = math.atan2(t0, t1)
+	
+	t2 = +2.0 * (w * y - z * x)
+	t2 = +1.0 if t2 > +1.0 else t2
+	t2 = -1.0 if t2 < -1.0 else t2
+	pitch_y = math.asin(t2)
+	
+	t3 = +2.0 * (w * z + x * y)
+	t4 = +1.0 - 2.0 * (y * y + z * z)
+	yaw_z = math.atan2(t3, t4)
+	
+	return roll_x, pitch_y, yaw_z # in radians
+
+
+class Vessel():
+	def __init__(self,object_identifier,parent):
+		self.name = object_identifier
+		self.parent = parent
+		self.publisher_geo_reference = rospy.Publisher('/'+self.name+'/reference/geopos', NavSatFix, queue_size=1)
+		self.publisher_yaw_reference = rospy.Publisher('/'+self.name+'/reference/yaw', Float32, queue_size=1)
+		self.formationPose = TransformStamped
+
+	def calculate_own_pose_from_formation_pose(self):
+		quat = self.formationPose.transform.rotation
+		trans = self.formationPose.transform.translation
+		dx, dy, dz = [trans.x, trans.y, trans.z]
+		droll, dpitch, dyaw = euler_from_quaternion(quat.x,quat.y,quat.z,quat.w)
+		# rotate placement vector of ship within formation coordinate system to global
+		pose_formation = self.parent.formation_ref_current
+
+		yaw_= pose_formation[2] + dyaw
+
+		dNdE = np.matmul(r_surf(yaw_),np.array([dx,dy]))
+		print('["'+self.name+'"] dNdE=' + str(dNdE) + 'meters north/east, yaw = '+str(yaw_) + 'dyaw='+str(dyaw) +' pose2='+str(pose_formation[2]))
+		#transform displacement in meters to change in lat/long 
+		dlat, dlong = geo_euclidean_transforms.d_northeast_to_d_latlong(dNdE[0],dNdE[1],pose_formation[0])
+		lat = pose_formation[0] + dlat
+		long = pose_formation[1] + dlong
+		
+
+		# send 
+		msg = NavSatFix()
+		msg.latitude = lat
+		msg.longitude = long
+		self.publisher_geo_reference.publish(msg)
+
+		msg = Float32()
+		msg.data = yaw_
+		self.publisher_yaw_reference.publish(msg)
+		
 class FormationTrajectoryPlanner():
-	def __init__(self,formation_id):
-		self.formation_id = formation_id
+	def __init__(self,object_id):
+		self.name = object_id
 		
 		# The waypoint array has latitude longitude and velocity reference, describing the rough outline of profile to follow.
 		self.waypoints = np.array([		[52.0014827166619,  4.37188818059471,   0.41],\
@@ -112,17 +180,22 @@ class FormationTrajectoryPlanner():
 										[52.0014827166619,  4.37188818059471,   0.41],\
 		])
 		
-		
-		self.node = rospy.init_node(self.formation_id + '_trajectory_planner', anonymous=False)
+		self.node = rospy.init_node(self.name + '_trajectory_planner', anonymous=False)
 		self.timestamp_recalculate_path = 0
 		self.timestamp_move_reference = 0
 		self.timestamp_broadcast_status = 0
+		
+		# Collect information on the shape of the formation.
+		# This fills an array of Vessel objects (self.vessels[]) that is used to manage subscribers and store data for each vessel in the configuration. 
+		self.vessels = []
+		self.formation_subscriber = rospy.Subscriber('/'+self.name+'/reference/tf_vessels',TransformStamped,self.configuration_callback)
 		
 
 		# State tracking of the formation
 		self.formation_ref_current = self.waypoints[0]
 		self.waypoints_smoothed = []
-		self.publisher_formation_ref_pos = rospy.Publisher('/'+self.formation_id+'/reference/pos', NavSatFix, queue_size=1)
+		self.publisher_formation_ref_pos = rospy.Publisher('/'+self.name+'/reference/geopos', NavSatFix, queue_size=1)
+		self.yaw_publisher = rospy.Publisher('/'+self.name+'/reference/yaw', Float32, queue_size=1)
 		self.i_refpos = 1
 		self.current_formation_velocity = 0.4
 				
@@ -144,36 +217,49 @@ class FormationTrajectoryPlanner():
 			none
 	
 		"""		
+		## Find the distance to be travvelled during this timestep according to reference velocity
 		movelength = dt*self.current_formation_velocity
 		if dt >PERIOD_MOVE_REF*100: # in case of severe delay or startup behaviour
 			movelength = 0.0
+		
+		## Find azimuth and distance of target waypoint
 		current = self.formation_ref_current[[0,1]]
 		target = self.waypoints_smoothed[[0,1],self.i_refpos]
-		fwd_azimuth1,back_azimuth1,distance1 = geodesic.inv(current[1], current[0],target[1],target[0])
+		fwd_azimuth,back_azimuth,distance = geodesic.inv(current[1], current[0],target[1],target[0])
 		
-		# determine if we arrived near the target waypoint
-		if movelength>= distance1:
+		## Determine swiching to next waypoint
+		if movelength>= distance:
 			# if so, go towards the next waypoint
 			self.i_refpos+=1
 			if self.i_refpos >= len(self.waypoints_smoothed[0,:]):
 				self.i_refpos =0 # Start again if at the end of the waypoint array
 	
-		# Do a step forward
+		## Move the formation reference 
 		# calculate distance travelled north/east
-		dN = np.cos(np.radians(fwd_azimuth1)) * movelength
-		dE = np.sin(np.radians(fwd_azimuth1)) * movelength
+		dN = np.cos(np.radians(fwd_azimuth)) * movelength
+		dE = np.sin(np.radians(fwd_azimuth)) * movelength
 		# transform to difference in geo coordinate
 		dlat, dlong = geo_euclidean_transforms.d_northeast_to_d_latlong(dN,dE,self.formation_ref_current[0])
+		
 		# move the formation by adding the difference this timestep
-		# print(f" dN = {dN:.5f} dE = {dE:.5f} dlat = {dlat:.15f} dlong = {dlong:.15f}") 
 		self.formation_ref_current[0] += dlat
 		self.formation_ref_current[1] += dlong
+		self.formation_ref_current[2] = math.radians(fwd_azimuth)
 		
 		# send 
 		msg = NavSatFix()
 		msg.latitude = self.formation_ref_current[0]
 		msg.longitude = self.formation_ref_current[1]
 		self.publisher_formation_ref_pos.publish(msg)
+
+		msg = Float32()
+		msg.data = self.formation_ref_current[2]
+		self.yaw_publisher.publish(msg)
+	
+	def broadcast_vessel_locations(self):
+		for vessel in self.vessels:
+			vessel.calculate_own_pose_from_formation_pose()
+
 
 	def run(self):
 		
@@ -189,14 +275,33 @@ class FormationTrajectoryPlanner():
 			if now - self.timestamp_move_reference > PERIOD_MOVE_REF:
 				self.moveref(now - self.timestamp_move_reference)
 				self.timestamp_move_reference = now
+				self.broadcast_vessel_locations()
 			
 			if now - self.timestamp_broadcast_status > PERIOD_BROADCAST_STATUS:
 				#print('Broacasting system status')
 				self.timestamp_broadcast_status = now
+				print(self.formation_ref_current)
 			
 		
 			rate.sleep()
+			
+	def configuration_callback(self, msg):
+		#check if the vessel is already registered in the formation
+		match = False
+		for vessel in self.vessels:
+			if vessel.name == msg.child_frame_id:
+				# vessel is already registered
+				match = True
+				vessel.formationPose = msg
+
+		if not match:
+			# Vessel is not yet registered
+			# Add new vessel to list
+			print('["'+rospy.get_name()+'"] Adding new vessel to formation: ' + msg.child_frame_id)
+			newvessel = Vessel(msg.child_frame_id,self)
+			newvessel.formationPose = msg 
+			self.vessels.append(newvessel)
 
 if __name__ == '__main__':
-	formationTrajectoryPlanner1 = FormationTrajectoryPlanner(args.formation_id[0])
+	formationTrajectoryPlanner1 = FormationTrajectoryPlanner(args.name[0])
 	formationTrajectoryPlanner1.run()
