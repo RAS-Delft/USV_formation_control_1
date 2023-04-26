@@ -31,8 +31,8 @@ class FormationConfigurationBroadcaster():
 
 			# Dark-blue Tito Neri
 			static_transformStamped.child_frame_id = "RAS_TN_DB"
-			static_transformStamped.transform.translation.x = float(0.0)
-			static_transformStamped.transform.translation.y = float(2.0)
+			static_transformStamped.transform.translation.x = float(-1.5)
+			static_transformStamped.transform.translation.y = float(1.5)
 			static_transformStamped.transform.translation.z = float(0.0)
 			quat = tf.transformations.quaternion_from_euler(
 						float(0.0),float(0.0),float(0.0))
@@ -44,8 +44,8 @@ class FormationConfigurationBroadcaster():
 
 			# Green Tito Neri
 			static_transformStamped.child_frame_id = "RAS_TN_GR"
-			static_transformStamped.transform.translation.x = float(-1.0)
-			static_transformStamped.transform.translation.y = float(-0.5)
+			static_transformStamped.transform.translation.x = float(-1.5)
+			static_transformStamped.transform.translation.y = float(-1.5)
 			static_transformStamped.transform.translation.z = float(0.0)
 			quat = tf.transformations.quaternion_from_euler(
 						float(0.0),float(0.0),float(0.0))
@@ -57,8 +57,8 @@ class FormationConfigurationBroadcaster():
 
 			# Orange Tito Neri
 			static_transformStamped.child_frame_id = "RAS_TN_OR"
-			static_transformStamped.transform.translation.x = float(0.0)
-			static_transformStamped.transform.translation.y = float(0.5)
+			static_transformStamped.transform.translation.x = float(1.5)
+			static_transformStamped.transform.translation.y = float(0.0)
 			static_transformStamped.transform.translation.z = float(0.0)
 			quat = tf.transformations.quaternion_from_euler(
 						float(0.0),float(0.0),float(0.0))
