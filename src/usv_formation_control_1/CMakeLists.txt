@@ -1,11 +1,6 @@
 cmake_minimum_required(VERSION 3.0.2)
 project(usv_formation_control_1)
 
-#find_package(Python COMPONENTS Interpreter REQUIRED)
-
-# install PyPI Python package using pip
-#execute_process(COMMAND ${Python_EXECUTABLE} -m pip install scipy)
-
 find_package(catkin REQUIRED COMPONENTS
   geometry_msgs
   rospy
@@ -16,12 +11,12 @@ find_package(catkin REQUIRED COMPONENTS
   tf2_ros
   geographic_msgs
   sensor_msgs
+  ras_tf_lib
 )
 
 catkin_package(
 
 )
-
 
 
 include_directories(
