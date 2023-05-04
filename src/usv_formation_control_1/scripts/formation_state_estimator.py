@@ -21,6 +21,7 @@ from geometry_msgs.msg import TransformStamped
 from geographic_msgs.msg import GeoPose
 from sensor_msgs.msg import NavSatFix
 from std_msgs.msg import Float32
+import ras_tf_lib.ras_tf_lib1  as rtf
 
 
 parser = argparse.ArgumentParser(description='get input of formation ID')
@@ -29,72 +30,6 @@ args, unknown = parser.parse_known_args()
 
 MAX_BROADCAST_PERIOD = 0.20 # seconds
 VESSEL_POSE_TIMEOUT = 5.0 # seconds
-
-def euler_from_quaternion(x, y, z, w):
-        """
-        Convert a quaternion into euler angles (roll, pitch, yaw)
-        roll is rotation around x in radians (counterclockwise)
-        pitch is rotation around y in radians (counterclockwise)
-        yaw is rotation around z in radians (counterclockwise)
-        """
-        t0 = +2.0 * (w * x + y * z)
-        t1 = +1.0 - 2.0 * (x * x + y * y)
-        roll_x = math.atan2(t0, t1)
-     
-        t2 = +2.0 * (w * y - z * x)
-        t2 = +1.0 if t2 > +1.0 else t2
-        t2 = -1.0 if t2 < -1.0 else t2
-        pitch_y = math.asin(t2)
-     
-        t3 = +2.0 * (w * z + x * y)
-        t4 = +1.0 - 2.0 * (y * y + z * z)
-        yaw_z = math.atan2(t3, t4)
-     
-        return roll_x, pitch_y, yaw_z # in radians
-
-def r_surf(yaw):
-	return  np.array(((np.cos(yaw),-np.sin(yaw)),(np.sin(yaw),np.cos(yaw))))
-
-def delta_northeast_to_delta_longlat(dn_de,lat):
-	"""
-	Calculates displacement in degrees (longitude & latitude) if the object would move a certain amount of meters 
-	tangent to earth surface north and east.
-
-	Args:
-	dn_de (float[2]): vector with 2 elements pertaining movement north and east respectively
-	lat (float): latitude on which the linearization takes place. Any near point. 
-
-	Returns:
-	[dlat,dlong] (float[2]) change in latitude and longitude respectively
-	"""
-	earth_radius = 6371.0e3  # Earth radius in meters
-	r_lat = earth_radius * np.cos(np.radians(lat))
-	dlat = np.degrees(dn_de[0]/earth_radius)
-	dlong = np.degrees(dn_de[1]/r_lat)
-	return np.array([dlat,dlong])
-
-def geo_transform_surface(pose_init,transform):
-	"""
-	Transforms pose_init across surface of earth (linearized over a short distance)
-	Initial pose is transformed by first doing translation and secondly rotation. 
-	The transformation operation is expressed in initial coordinate system
-	
-	Args:
-	pose_init (float[3]): The initial pose of the object [latitude (deg), longitude (deg), yaw(radians)]
-	transform (float[3]): The transformation from object to new coordinate system [dx (meters), dy (meter), d_yaw (radians)]
-
-	Returns:
-	pose_out (float[3])
-	"""
-
-	yaw_formation = pose_init[2] - transform[2]
-	R_formation = r_surf(yaw_formation)
-	dn_de = -np.matmul(R_formation,transform[0:2])
-
-	dlat_dlong = delta_northeast_to_delta_longlat(dn_de,pose_init[0])
-
-	lat_long_new = np.array(pose_init[0:2]) + dlat_dlong
-	return np.concatenate((lat_long_new, np.array([yaw_formation])), axis=0)
 
 class Vessel():
 	def __init__(self,name,parent):
@@ -121,9 +56,9 @@ class Vessel():
 		quat = self.formationPose.transform.rotation
 		trans = self.formationPose.transform.translation
 		dx, dy, dz = [trans.x, trans.y, trans.z]
-		roll, pitch, yaw = euler_from_quaternion(quat.x,quat.y,quat.z,quat.w)
+		roll, pitch, yaw = rtf.euler_from_quaternion(quat.x,quat.y,quat.z,quat.w)
 		transform_surf = [dx,dy,roll]
-		return geo_transform_surface(self.lastPose,transform_surf)
+		return rtf.geo_transform_surface(self.lastPose,transform_surf)
 
 
 class FormationStateEstimatorNode():
@@ -141,7 +76,7 @@ class FormationStateEstimatorNode():
 		self.geopos_publisher = rospy.Publisher('/'+self.formation_id+'/state/geopos', NavSatFix, queue_size=1)
 		self.yaw_publisher = rospy.Publisher('/'+self.formation_id+'/state/yaw', Float32, queue_size=1)
 		
-	def configuration_callback(self, msg):
+	def configuration_callback(self, msg:TransformStamped):
 		#check if the vessel is already registered in the formation
 		match = False
 		for vessel in self.vessels:
@@ -158,8 +93,6 @@ class FormationStateEstimatorNode():
 			newvessel = Vessel(msg.child_frame_id,self)
 			newvessel.formationPose = msg 
 			self.vessels.append(newvessel)
-
-
 
 	def broadcast_callback(self):
 
