@@ -49,13 +49,21 @@ class VirtualDraglineVesselController():
 		self.publisher_ref_velocity = rospy.Publisher('/'+self.name+'/reference/velocity', Float32MultiArray, queue_size=1)
 		self.reference_subscriber = rospy.Subscriber('/'+self.name+'/reference/geopos',NavSatFix,self.callback_reference)
 		self.state_geopos_subscriber = rospy.Subscriber('/'+self.name+'/state/geopos',NavSatFix,self.callback_state_geopos)
+
+		self.tracker_num_ref_callback = 0.0
+		self.tracker_num_state_callback  = 0.0
+		self.tracker_num_control_callback  = 0.0
+		self.tracker_num_mainloop_callback = 0.0
+
 				
 	def callback_reference(self,msg:NavSatFix):
+		self.tracker_num_ref_callback += 1
 		self.last_ref_update = time.time()
 		self.ref = [msg.latitude,msg.longitude]
 		self.run_controls()
 
 	def callback_state_geopos(self,msg:NavSatFix):
+		self.tracker_num_state_callback += 1
 		self.last_state_geopos_update = time.time()
 		self.geopos = [msg.latitude,msg.longitude]
 		self.run_controls()
@@ -64,7 +72,9 @@ class VirtualDraglineVesselController():
 		"""
 		Calculate reference velocity and heading for the ship
 		"""
+		
 		if self.ref and self.geopos:
+			self.tracker_num_control_callback += 1
 			fwd_azimuth_deg,back_azimuth_deg,distance = geodesic.inv(self.geopos[1], self.geopos[0],self.ref[1],self.ref[0])
 
 			# Run PID controller to maintain desired distance between ship and reference
@@ -88,10 +98,43 @@ class VirtualDraglineVesselController():
 		rate = rospy.Rate(1000)  # Hz
 		while not rospy.is_shutdown():
 			now = time.time()
+			self.tracker_num_mainloop_callback += 1
 			if now - self.timestamp_broadcast_status > PERIOD_BROADCAST_STATUS:
 				self.timestamp_broadcast_status = now
-				#print('[vessel spd+heading ref generator '+self.name+'] Running ' + str(time.time()-self.tstart))
-			
+				
+				# Determine system frequencies rounded to two decimals
+				freq_ref_callback = round(self.tracker_num_ref_callback/PERIOD_BROADCAST_STATUS,2)
+				freq_gepos_state_callback = round(self.tracker_num_state_callback/PERIOD_BROADCAST_STATUS,2)
+				freq_control_callback = round(self.tracker_num_control_callback/PERIOD_BROADCAST_STATUS,2)
+				freq_mainloop_callback = round(self.tracker_num_mainloop_callback/PERIOD_BROADCAST_STATUS,2)
+
+				# Make strings of numbers in white if nonzero and red if zero
+				if freq_ref_callback:
+					freq_ref_callback_str = '\033[0m'+str(freq_ref_callback)
+				else:
+					freq_ref_callback_str = '\033[91m'+str(freq_ref_callback)+'\033[0m'
+				if freq_gepos_state_callback:
+					freq_gepos_state_callback_str = '\033[0m'+str(freq_gepos_state_callback)
+				else:
+					freq_gepos_state_callback_str = '\033[91m'+str(freq_gepos_state_callback)+'\033[0m'
+				if freq_control_callback:
+					freq_control_callback_str = '\033[0m'+str(freq_control_callback)
+				else:
+					freq_control_callback_str = '\033[91m'+str(freq_control_callback)+'\033[0m'
+				if freq_mainloop_callback:
+					freq_mainloop_callback_str = '\033[0m'+str(freq_mainloop_callback)
+				else:
+					freq_mainloop_callback_str = '\033[91m'+str(freq_mainloop_callback)+'\033[0m'
+
+				# Print system frequencies
+				print('['+self.name+'][spd/yaw ref generator]['+str(round(time.time()-self.tstart,2)) + 's] freq_ref_callback: '+freq_ref_callback_str+' freq_gepos_state_callback: '+freq_gepos_state_callback_str+' freq_control_callback: '+freq_control_callback_str+' freq_mainloop: '+freq_mainloop_callback_str)
+
+				# Reset counters
+				self.tracker_num_ref_callback = 0.0
+				self.tracker_num_state_callback  = 0.0
+				self.tracker_num_control_callback  = 0.0
+				self.tracker_num_mainloop_callback = 0.0
+
 			rate.sleep()
 
 if __name__ == '__main__':
