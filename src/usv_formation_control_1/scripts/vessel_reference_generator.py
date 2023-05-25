@@ -34,8 +34,11 @@ class VirtualDraglineVesselController():
 		self.tstart = time.time()
 		self.name = object_id
 		self.distance = distance_
+
+		# Look if vessel_id is a field of the rascolors class. Set self.color to the corresponding color or otherwise VESSEL_COLOR_DEFAULT
+		self.color = getattr(rascolors, self.name, rascolors.VESSEL_COLOR_DEFAULT)
 	
-		self.timestamp_broadcast_status = 0
+		self.timestamp_broadcast_status = time.time()
 		self.ref = []
 		self.geopos = []
 		self.velocityPID = PIDController(0.2,0.0,0.0,ref_init=-distance_)
@@ -50,10 +53,11 @@ class VirtualDraglineVesselController():
 		self.reference_subscriber = rospy.Subscriber('/'+self.name+'/reference/geopos',NavSatFix,self.callback_reference)
 		self.state_geopos_subscriber = rospy.Subscriber('/'+self.name+'/state/geopos',NavSatFix,self.callback_state_geopos)
 
-		self.tracker_num_ref_callback = 0.0
-		self.tracker_num_state_callback  = 0.0
-		self.tracker_num_control_callback  = 0.0
-		self.tracker_num_mainloop_callback = 0.0
+		# Diagnostics
+		self.tracker_num_ref_callback = 0
+		self.tracker_num_state_callback  = 0
+		self.tracker_num_control_callback  = 0
+		self.tracker_num_mainloop_callback = 0
 
 				
 	def callback_reference(self,msg:NavSatFix):
@@ -108,27 +112,16 @@ class VirtualDraglineVesselController():
 				freq_control_callback = round(self.tracker_num_control_callback/PERIOD_BROADCAST_STATUS,2)
 				freq_mainloop_callback = round(self.tracker_num_mainloop_callback/PERIOD_BROADCAST_STATUS,2)
 
-				# Make strings of numbers in white if nonzero and red if zero
-				if freq_ref_callback:
-					freq_ref_callback_str = '\033[0m'+str(freq_ref_callback)
-				else:
-					freq_ref_callback_str = '\033[91m'+str(freq_ref_callback)+'\033[0m'
-				if freq_gepos_state_callback:
-					freq_gepos_state_callback_str = '\033[0m'+str(freq_gepos_state_callback)
-				else:
-					freq_gepos_state_callback_str = '\033[91m'+str(freq_gepos_state_callback)+'\033[0m'
-				if freq_control_callback:
-					freq_control_callback_str = '\033[0m'+str(freq_control_callback)
-				else:
-					freq_control_callback_str = '\033[91m'+str(freq_control_callback)+'\033[0m'
-				if freq_mainloop_callback:
-					freq_mainloop_callback_str = '\033[0m'+str(freq_mainloop_callback)
-				else:
-					freq_mainloop_callback_str = '\033[91m'+str(freq_mainloop_callback)+'\033[0m'
+				# Make strings of numbers without color if above zero and and rascolors.FAIL otherwise
+				freq_ref_callback_str = rascolors.OKGREEN + str(freq_ref_callback) + rascolors.NORMAL if freq_ref_callback > 0 else rascolors.FAIL + str(freq_ref_callback) + rascolors.NORMAL
+				freq_gepos_state_callback_str = rascolors.OKGREEN + str(freq_gepos_state_callback) + rascolors.NORMAL if freq_gepos_state_callback > 0 else rascolors.FAIL + str(freq_gepos_state_callback) + rascolors.NORMAL
+				freq_control_callback_str = rascolors.OKGREEN + str(freq_control_callback) + rascolors.NORMAL if freq_control_callback > 0 else rascolors.FAIL + str(freq_control_callback) + rascolors.NORMAL
+				freq_mainloop_callback_str = rascolors.OKGREEN + str(freq_mainloop_callback) + rascolors.NORMAL if freq_mainloop_callback > 0 else rascolors.FAIL + str(freq_mainloop_callback) + rascolors.NORMAL
 
-				# Print system frequencies
-				print('['+self.name+'][spd/yaw ref generator]['+str(round(time.time()-self.tstart,2)) + 's] freq_ref_callback: '+freq_ref_callback_str+' freq_gepos_state_callback: '+freq_gepos_state_callback_str+' freq_control_callback: '+freq_control_callback_str+' freq_mainloop: '+freq_mainloop_callback_str)
+				# Print system state
+				print(' '+self.color + self.name + rascolors.NORMAL +' [Velocity/yaw reference calculator]['+str(round(time.time()-self.tstart,2)) + 's] freq ref callback: ' + freq_ref_callback_str + ' Hz, freq state callback: ' + freq_gepos_state_callback_str + ' Hz, freq control callback: ' + freq_control_callback_str + ' Hz, freq mainloop callback: ' + freq_mainloop_callback_str + ' Hz')
 
+			
 				# Reset counters
 				self.tracker_num_ref_callback = 0.0
 				self.tracker_num_state_callback  = 0.0

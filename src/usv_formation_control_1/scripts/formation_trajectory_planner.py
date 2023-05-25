@@ -104,7 +104,7 @@ class FormationTrajectoryPlanner():
 		self.node = rospy.init_node(self.name + '_trajectory_planner', anonymous=False)
 		self.timestamp_recalculate_path = 0
 		self.timestamp_move_reference = 0
-		self.timestamp_broadcast_status = 0
+		self.timestamp_broadcast_status = time.time()
 		
 		# Collect information on the shape of the formation.
 		# This fills an array of Vessel objects (self.vessels[]) that is used to manage subscribers and store data for each vessel in the configuration. 
@@ -119,6 +119,10 @@ class FormationTrajectoryPlanner():
 		self.yaw_publisher = rospy.Publisher('/'+self.name+'/reference/yaw', Float32, queue_size=1)
 		self.i_refpos = 1
 		self.current_formation_velocity = 0.40
+
+		# diagnostics
+		self.tracker_moveref_callback = 0
+		self.tracker_num_mainloop_callback = 0
 				
 	def replan_trajectory(self):
 		"""
@@ -181,6 +185,8 @@ class FormationTrajectoryPlanner():
 		msg = Float32()
 		msg.data = self.formation_ref_current[2]
 		self.yaw_publisher.publish(msg)
+
+		self.tracker_moveref_callback += 1
 	
 	def broadcast_vessel_references(self):
 		for vessel in self.vessels:
@@ -200,6 +206,7 @@ class FormationTrajectoryPlanner():
 		rate = rospy.Rate(1000)  # Hz
 		while not rospy.is_shutdown():
 			now = time.time()
+			self.tracker_num_mainloop_callback += 1
 			
 			if now - self.timestamp_recalculate_path > PERIOD_RECALCULATE_PATH:
 				self.timestamp_recalculate_path = now
@@ -212,7 +219,21 @@ class FormationTrajectoryPlanner():
 			
 			if now - self.timestamp_broadcast_status > PERIOD_BROADCAST_STATUS:
 				self.timestamp_broadcast_status = now
-				pass # status report disabled
+
+				# Determine system frequencies rounded to two decimals
+				freq_moveref = round(self.tracker_moveref_callback / PERIOD_BROADCAST_STATUS, 2)
+				freq_mainloop = round(self.tracker_num_mainloop_callback / PERIOD_BROADCAST_STATUS, 2)
+
+				# Make strings of numbers in white if nonzero and red if zero
+				freq_moveref_str = str(freq_moveref) if freq_moveref > 0 else rascolors.FAIL + str(freq_moveref) + rascolors.NORMAL
+				freq_mainloop_str = str(freq_mainloop) if freq_mainloop > 0 else rascolors.FAIL + str(freq_mainloop) + rascolors.NORMAL
+
+				# Print system state
+				print('[' + self.name + '][trajectory planner] ' + 'Mainloop: ' + freq_mainloop_str + ' Hz, moveref_callback: ' + freq_moveref_str + ' Hz')
+
+				# Reset counters
+				self.tracker_moveref_callback = 0
+				self.tracker_num_mainloop_callback = 0
 
 		
 			rate.sleep()
@@ -229,7 +250,7 @@ class FormationTrajectoryPlanner():
 		if not match:
 			# Vessel is not yet registered
 			# Add new vessel to list
-			print('["'+rospy.get_name()+'"] Adding new vessel to formation: ' + msg.child_frame_id)
+			print('['+self.name+'][trajectory planner] Adding new vessel to formation: ' + msg.child_frame_id)
 			self.vessels.append(Vessel(msg.child_frame_id,self,formationPose_=msg))
 
 if __name__ == '__main__':
