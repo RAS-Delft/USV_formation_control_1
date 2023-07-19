@@ -24,6 +24,7 @@ from std_msgs.msg import Float32
 from geometry_msgs.msg import TransformStamped
 
 import ras_tf_lib.ras_tf_lib1  as rtf
+from ras_tf_lib.ras_tf_lib1 import rascolors
 
 parser = argparse.ArgumentParser(description='get input of formation ID')
 parser.add_argument('name', type=str, nargs=1,help='Identifier of the formation')
@@ -31,10 +32,8 @@ args, unknown = parser.parse_known_args()
 
 PERIOD_RECALCULATE_PATH = 40.0 # seconds
 PERIOD_MOVE_REF = 0.10 # seconds
-PERIOD_BROADCAST_STATUS = 4.0 # seconds
+PERIOD_BROADCAST_STATUS = 10.0 # seconds
 geodesic = pyproj.Geod(ellps='WGS84')
-
-
 
 
 class Vessel():
@@ -90,15 +89,14 @@ class FormationTrajectoryPlanner():
 		self.name = object_id
 		
 		# The waypoint array has latitude longitude and velocity reference, describing the rough outline of profile to follow.
-		self.waypoints = np.array([		[52.0014827166619,  4.37188818059471,   0.41],\
-										[52.001507485826,   4.37200619779137,   0.42],\
-										[52.0015768394125,  4.37204106650856,   0.43],\
-										[52.0016527979791,  4.37200083337334,   0.44],\
-										[52.0017171975326,  4.3719230493119,	0.45],\
-										[52.0016907772142,  4.37178357444313,   0.46],\
-										[52.00162472635,	4.37174334130791,   0.47],\
-										[52.0015355575287,  4.37179162107018,   0.48],\
-										[52.0014827166619,  4.37188818059471,   0.41],\
+		self.waypoints = np.array([		[52.0014827166619,  4.37188818059471,   0.35],\
+										[52.001507485826,   4.37200619779137,   0.35],\
+										[52.0015768394125,  4.37204106650856,   0.35],\
+										[52.0016527979791,  4.37200083337334,   0.35],\
+										[52.0017171975326,  4.3719230493119,	0.35],\
+										[52.0016907772142,  4.37178357444313,   0.35],\
+										[52.00162472635,	4.37174334130791,   0.35],\
+										[52.0015355575287,  4.37179162107018,   0.35],\
 		])
 		
 		self.node = rospy.init_node(self.name + '_trajectory_planner', anonymous=False)
@@ -118,7 +116,10 @@ class FormationTrajectoryPlanner():
 		self.publisher_formation_ref_pos = rospy.Publisher('/'+self.name+'/reference/geopos', NavSatFix, queue_size=1)
 		self.yaw_publisher = rospy.Publisher('/'+self.name+'/reference/yaw', Float32, queue_size=1)
 		self.i_refpos = 1
-		self.current_formation_velocity = 0.40
+		self.current_formation_velocity = 0.35
+
+
+
 
 		# diagnostics
 		self.tracker_moveref_callback = 0
@@ -131,9 +132,17 @@ class FormationTrajectoryPlanner():
 		"""
 		self.timestamp_recalculate_path = time.time()
 		self.formation_ref_current = self.waypoints[0]
+		# Select the first two columns (lat/long) of the waypoints array
 		waypoints = self.waypoints[:, [0, 1]]
-		self.waypoints_smoothed = np.array(rtf.B_spline(waypoints))
-		self.i_refpos = 1
+		#self.waypoints_smoothed = np.array(rtf.B_spline(waypoints))
+
+		# Smooth with chaikins corner cutting algorithm
+		self.waypoints_smoothed = rtf.chaikins_corner_cutting(waypoints,5)
+
+		# set the first waypoint as the current reference
+		# concatenate the waypoint array [lat,long] with the angle 0 reference
+		self.formation_ref_current = np.concatenate((self.waypoints_smoothed[0], [0]))
+		
 	
 	def moveref(self,dt:float):
 		"""
@@ -150,19 +159,26 @@ class FormationTrajectoryPlanner():
 		movelength = dt*self.current_formation_velocity
 		if dt >PERIOD_MOVE_REF*100: # in case of severe delay or startup behaviour
 			movelength = 0.0
-		
+
 		## Find azimuth and distance of target waypoint
 		current = self.formation_ref_current[[0,1]]
-		target = self.waypoints_smoothed[[0,1],self.i_refpos]
+		target = self.waypoints_smoothed[self.i_refpos,[0,1]]
 		fwd_azimuth,back_azimuth,distance = geodesic.inv(current[1], current[0],target[1],target[0])
-		
-		## Determine swiching to next waypoint
-		if movelength>= distance:
+
+		# Check if the distance travelled is larger than the distance to the next waypoint. If so, switch target to the next waypoint
+		# Do this with a maximum of 5 attempts to prevent infinite loops
+		attempts = 0
+		while movelength>= distance and attempts < 5:
+			attempts += 1
 			# if so, go towards the next waypoint
 			self.i_refpos+=1
-			if self.i_refpos >= len(self.waypoints_smoothed[0,:]):
+			if self.i_refpos >= len(self.waypoints_smoothed):
 				self.i_refpos =0 # Start again if at the end of the waypoint array
-	
+
+			# Find distance of target waypoint
+			target = self.waypoints_smoothed[self.i_refpos]
+			fwd_azimuth,back_azimuth,distance = geodesic.inv(current[1], current[0],target[1],target[0])
+
 		## Move the formation reference 
 		# calculate distance travelled north/east
 		dN = np.cos(np.radians(fwd_azimuth)) * movelength
@@ -175,7 +191,8 @@ class FormationTrajectoryPlanner():
 		self.formation_ref_current[0] += dlat
 		self.formation_ref_current[1] += dlong
 		self.formation_ref_current[2] = math.radians(fwd_azimuth)
-		
+
+
 		# send 
 		msg = NavSatFix()
 		msg.latitude = self.formation_ref_current[0]
@@ -201,8 +218,11 @@ class FormationTrajectoryPlanner():
 
 
 	def run(self):
-		
+		# Plan the trajectory of the formation by smoothing the waypoints 
 		self.replan_trajectory()
+		# Set the formation reference to the first waypoint
+		#self.formation_ref_current = np.concatenate((self.waypoints_smoothed[:,self.i_refpos], [0]), axis=0)
+
 		rate = rospy.Rate(1000)  # Hz
 		while not rospy.is_shutdown():
 			now = time.time()
