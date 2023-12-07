@@ -9,26 +9,28 @@ Researchlab Autonomous Shipping Delft - (info: bartboogmans@hotmail.com)
 
 """
 
-import rospy
-import numpy as np
+import rclpy
 import argparse
 import time
 import math
 from sensor_msgs.msg import NavSatFix
 import pyproj
+from rclpy.node import Node
 from std_msgs.msg import Float32, Float32MultiArray
-import ras_tf_lib.ras_tf_lib1  as rtf
-from ras_tf_lib.ras_tf_lib1 import rascolors
-from ras_tf_lib.controlUtils import PIDController, generate_rosmsg_PID_status
+from ras_ros_core_control_modules.tools.control_tools import PIDController, generate_rosmsg_PID_status
+import ras_ros_core_control_modules.tools.display_tools as ras_display_tools
+import ras_ros_core_control_modules.tools.geometry_tools as ras_geometry_tools
 
-parser = argparse.ArgumentParser(description='get input of vessel ID')
-parser.add_argument('name', type=str, nargs=1,help='Identifier of the vessel')
-parser.add_argument('distance', type=float, nargs=1,help='distance between ship and ref')
+parser = argparse.ArgumentParser(description='From given position and reference position, calculate reference heading and velocity to attempt to maintain a fixed distance from moving reference')
+parser.add_argument('name', type=str ,help='Identifier of the vessel')
+parser.add_argument('distance', type=float,help='distance between ship and ref')
+parser.add_argument("-r") # ROS2 arguments
 args, unknown = parser.parse_known_args()
 
-
+REF_DISTANCE = args.distance[0]
+OBJECT_ID = args.name
 PERIOD_BROADCAST_STATUS = 5.0 # seconds
-PERIOD_RECALC_REFERENCES = 0.01 # seconds
+PERIOD_RECALC_REFERENCES = 0.05 # seconds
 PERIOD_BROADCAST_CONTROL_STATUS = 1.0/16.0 # Hz
 MIN_PERIOD_CONTROL = 1.0/16.0 # maximum PID update rate is 20Hz
 geodesic = pyproj.Geod(ellps='WGS84')
@@ -37,60 +39,68 @@ class distancePIDController(PIDController):
 	def calc_error(self):
 		return  self.state - self.ref
 
-class NomotoFollowingDistanceController():
-	def __init__(self,object_id:str,distance_:float):
-		self.tstart = time.time()
-		self.name = object_id
-		self.distance = distance_
+class NomotoFollowingDistanceControllerNode(Node):
+	def __init__(self):	
+		super().__init__('formation1_heading_velocity_reference generator')
 
-		# Look if vessel_id is a field of the rascolors class. Set self.color to the corresponding color or otherwise VESSEL_COLOR_DEFAULT
-		self.color = getattr(rascolors, self.name, rascolors.VESSEL_COLOR_DEFAULT)
-	
 		self.tlast_control = 0
 		self.pid_state_updated = 0
 		self.timestamp_broadcast_status = time.time()
 		self.geopos_ref = []
 		self.geopos_state = []
-		self.velocityPID = distancePIDController(0.25,0.00,0.0,ref_init=distance_) # ki was 0.018
+		self.velocityPID = distancePIDController(0.25,0.00,0.0,ref_init=REF_DISTANCE) # ki was 0.018
 		self.velocityPID.integral_limits=[-66.0,66.0] # based on benchmark error of 2.0m over a period of 8s
 		self.velocityPID.output_limits=[0.25,0.5]
 
 		# Communication
-		self.node = rospy.init_node(self.name + '_vel_heading_reference_generator', anonymous=False)
-		self.publisher_ref_heading = rospy.Publisher('/'+self.name+'/reference/yaw', Float32, queue_size=1)
+		"""
+ 		self.publisher_ref_heading = rospy.Publisher('/'+self.name+'/reference/yaw', Float32, queue_size=1)
 		self.publisher_distance = rospy.Publisher('/'+self.name+'/diagnostics/refposdistance', Float32, queue_size=1)
 		self.publisher_ref_velocity = rospy.Publisher('/'+self.name+'/reference/velocity', Float32MultiArray, queue_size=1)
 		self.reference_subscriber = rospy.Subscriber('/'+self.name+'/reference/geopos',NavSatFix,self.callback_reference)
 		self.state_geopos_subscriber = rospy.Subscriber('/'+self.name+'/state/geopos',NavSatFix,self.callback_state_geopos)
-		self.pid_status_publisher = rospy.Publisher('/'+self.name+'/diagnostics/distanceController/pid_status', Float32MultiArray, queue_size=1)
+		self.pid_status_publisher = rospy.Publisher('/'+self.name+'/diagnostics/distanceController/pid_status', Float32MultiArray, queue_size=1) 
+		"""
 		#self.publisher_filtered_distance = rospy.Publisher('/'+self.name+'/diagnostics/filtered_distance', Float32, queue_size=1)
-		
+
+		self.reference_geopos_subscriber = self.create_subscription(NavSatFix,'reference/geopos',self.callback_reference,10)
+		self.state_geopos_subscriber = self.create_subscription(NavSatFix,'state/geopos',self.callback_state_geopos,10)
+
+		self.publisher_ref_heading = self.create_publisher(Float32, 'reference/yaw', 10)
+		self.publisher_ref_velocity = self.create_publisher(Float32MultiArray, 'reference/velocity', 10)
+
+		self.publisher_distance = self.create_publisher(Float32, 'diagnostics/refposdistance', 10)
+
+		# Timer for broadcasting output
+		self.timer_control = self.create_timer(MIN_PERIOD_CONTROL, self.run_controls)
+
 		# Diagnostics
-		self.tracker_num_ref_callback = 0
-		self.tracker_num_state_callback  = 0
-		self.tracker_num_control_callback  = 0
-		self.tracker_num_mainloop_callback = 0
+		self.tracker_callback_publish_reference_heading = 0
+		self.tracker_callback_publish_reference_velocity = 0
+		self.tracker_callback_reference_geopos = 0
+		self.tracker_callback_state_geopos = 0
 
-		self.timestamp_broadcast_control_status=0
+		self.last_ref_update = None
+		self.last_ref_geopos_update = None
+		self.geopos_ref = None
+		self.geopos_state = None
 
-				
 	def callback_reference(self,msg:NavSatFix):
-		self.tracker_num_ref_callback += 1
-		self.last_ref_update = time.time()
+		self.tracker_callback_reference_geopos += 1
+		self.last_ref_geopos_update = time.time()
 		self.geopos_ref = [msg.latitude,msg.longitude]
-		self.pid_state_updated = 1
 
 	def callback_state_geopos(self,msg:NavSatFix):
-		self.tracker_num_state_callback += 1
+		self.tracker_callback_state_geopos += 1
 		self.last_state_geopos_update = time.time()
 		self.geopos_state = [msg.latitude,msg.longitude]
-		self.pid_state_updated = 1
 	
 	def run_controls(self):
 		"""
 		Calculate reference velocity and heading for the ship
 		"""
 		if self.geopos_ref and self.geopos_state:
+			self.tracker_num_control_callback += 1
 			# Calculate azimuth and distance between ship and reference
 			fwd_azimuth_deg,back_azimuth_deg,distance = geodesic.inv(self.geopos_state[1], self.geopos_state[0],self.geopos_ref[1],self.geopos_ref[0])
 
@@ -111,50 +121,41 @@ class NomotoFollowingDistanceController():
 			msg.data = distance
 			self.publisher_distance.publish(msg)
 
-	def run(self):
-		rate = rospy.Rate(1000)  # Hz
-		while not rospy.is_shutdown():
-			now = time.time()
-			self.tracker_num_mainloop_callback += 1
+	def print_statistics(self):
+		""" On a single line, print the rates of all major callbacks in this script. """
+		
+		# Calculate passed time
+		now = self.get_clock().now()
+		passed_time = now - self.timer_statistics_last
 
-			if now-self.tlast_control>MIN_PERIOD_CONTROL and self.pid_state_updated:
-				self.tlast_control = now
-				self.tracker_num_control_callback += 1
-				self.run_controls()
+		# Calculate rates
+		rate_callback_run_controls = self.tracker_num_control_callback / passed_time.nanoseconds * 1e9
+		rate_callback_reference_geopos = self.tracker_callback_reference_geopos / passed_time.nanoseconds * 1e9
+		rate_callback_state_geopos = self.tracker_callback_state_geopos / passed_time.nanoseconds * 1e9
 
-			if now - self.timestamp_broadcast_status > PERIOD_BROADCAST_STATUS:
-				self.timestamp_broadcast_status = now
-				
-				# Determine system frequencies rounded to two decimals
-				freq_ref_callback = round(self.tracker_num_ref_callback/PERIOD_BROADCAST_STATUS,2)
-				freq_gepos_state_callback = round(self.tracker_num_state_callback/PERIOD_BROADCAST_STATUS,2)
-				freq_control_callback = round(self.tracker_num_control_callback/PERIOD_BROADCAST_STATUS,2)
-				freq_mainloop_callback = round(self.tracker_num_mainloop_callback/PERIOD_BROADCAST_STATUS,2)
+		# Format string
+		printstring = ras_display_tools.terminal_fleet_module_string(OBJECT_ID,['callback_run_controls',rate_callback_run_controls,'Hz'],['callback_reference_geopos',rate_callback_reference_geopos,'Hz'],['callback_state_geopos',rate_callback_state_geopos,'Hz'])
 
-				# Make strings of numbers without color if above zero and and rascolors.FAIL otherwise
-				freq_ref_callback_str = rascolors.OKGREEN + str(freq_ref_callback) + rascolors.NORMAL if freq_ref_callback > 0 else rascolors.FAIL + str(freq_ref_callback) + rascolors.NORMAL
-				freq_gepos_state_callback_str = rascolors.OKGREEN + str(freq_gepos_state_callback) + rascolors.NORMAL if freq_gepos_state_callback > 0 else rascolors.FAIL + str(freq_gepos_state_callback) + rascolors.NORMAL
-				freq_control_callback_str = rascolors.OKGREEN + str(freq_control_callback) + rascolors.NORMAL if freq_control_callback > 0 else rascolors.FAIL + str(freq_control_callback) + rascolors.NORMAL
-				freq_mainloop_callback_str = rascolors.OKGREEN + str(freq_mainloop_callback) + rascolors.NORMAL if freq_mainloop_callback > 0 else rascolors.FAIL + str(freq_mainloop_callback) + rascolors.NORMAL
+		# Print
+		self.get_logger().info(printstring)
 
-				# Print system state
-				print(' '+self.color + self.name + rascolors.NORMAL +' [Velocity/yaw reference calculator]['+str(round(time.time()-self.tstart,2)) + 's] freq ref callback: ' + freq_ref_callback_str + ' Hz, freq state callback: ' + freq_gepos_state_callback_str + ' Hz, freq control callback: ' + freq_control_callback_str + ' Hz, freq mainloop callback: ' + freq_mainloop_callback_str + ' Hz')
+		# Reset trackers
+		self.tracker_num_control_callback = 0
+		self.tracker_callback_reference_geopos = 0
+		self.tracker_callback_state_geopos = 0
+		self.timer_statistics_last = now
 
-			
-				# Reset counters
-				self.tracker_num_ref_callback = 0.0
-				self.tracker_num_state_callback  = 0.0
-				self.tracker_num_control_callback  = 0.0
-				self.tracker_num_mainloop_callback = 0.0
+def main(args=None):
+	rclpy.init(args=args)
 
-			if now - self.timestamp_broadcast_control_status > PERIOD_BROADCAST_CONTROL_STATUS:
-				self.timestamp_broadcast_control_status = now
+	node = NomotoFollowingDistanceControllerNode()
 
-				# Publish PID status
-				self.pid_status_publisher.publish(generate_rosmsg_PID_status(self.velocityPID))
+	# Start the nodes processing thread
+	rclpy.spin(node)
 
-			rate.sleep()
+	# at termination of the code (generally with ctrl-c) Destroy the node explicitly
+	node.destroy_node()
+	rclpy.shutdown()
 
 if __name__ == '__main__':
-	vesselcontroller = NomotoFollowingDistanceController(args.name[0],args.distance[0])
-	vesselcontroller.run()
+	main()
