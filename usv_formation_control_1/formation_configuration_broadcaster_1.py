@@ -5,71 +5,86 @@ Broadcaster of a fixed configuration of a few RAS vessels.
 Initial developer: Bart Boogmans (bartboogmans@hotmail.com)
 """
 
-import rospy
-import tf
+import rclpy
+from rclpy.node import Node
+from tf2_ros import TFMessage	
 from geometry_msgs.msg import TransformStamped
 import argparse
 
 parser = argparse.ArgumentParser(description='get input of formation ID')
-parser.add_argument('formation_id', type=str, nargs=1,help='Identifier of the formation')
+parser.add_argument('formation_id', type=str,help='Identifier of the formation')
+parser.add_argument("-r") # ROS2 arguments
 args, unknown = parser.parse_known_args()
 
-class FormationConfigurationBroadcaster():
-	def __init__(self,formation_id):
-		self.formation_id = formation_id
-		self.node = rospy.init_node(self.formation_id + '_configuration_broadcaster_fixed', anonymous=False)
-		self.pub_tf = rospy.Publisher("/"+ self.formation_id +"/reference/tf_vessels", TransformStamped, queue_size=100, latch=True)
+FORMATION_ID = args.formation_id
 
-	def run(self):
-		rate = rospy.Rate(1.0)  # Hz
-		while not rospy.is_shutdown():
-			static_transformStamped = TransformStamped()
-			static_transformStamped.header.stamp = rospy.Time.now()
-			static_transformStamped.header.frame_id = "formation1"
 
-			## Triangle configuration
+class FormationConfigurationBroadcasterNode(Node):
+	def __init__(self):
+		super().__init__('formation_configuration_broadcaster_fixed')
+		self.pub_tf = self.create_publisher(TFMessage, "/"+ FORMATION_ID +"/reference/tf_vessels", 10)
 
-			# Dark-blue Tito Neri
-			static_transformStamped.child_frame_id = "RAS_TN_DB"
-			static_transformStamped.transform.translation.x = float(-1.5)
-			static_transformStamped.transform.translation.y = float(1.5)
-			static_transformStamped.transform.translation.z = float(0.0)
-			quat = tf.transformations.quaternion_from_euler(
-						float(0.0),float(0.0),float(0.0))
-			static_transformStamped.transform.rotation.x = quat[0]
-			static_transformStamped.transform.rotation.y = quat[1]
-			static_transformStamped.transform.rotation.z = quat[2]
-			static_transformStamped.transform.rotation.w = quat[3]
-			self.pub_tf.publish(static_transformStamped)
+		self.timer_broadcast = self.create_timer(4.0, self.broadcast_configuration)
 
-			# Green Tito Neri
-			static_transformStamped.child_frame_id = "RAS_TN_GR"
-			static_transformStamped.transform.translation.x = float(-1.5)
-			static_transformStamped.transform.translation.y = float(-1.5)
-			static_transformStamped.transform.translation.z = float(0.0)
-			quat = tf.transformations.quaternion_from_euler(
-						float(0.0),float(0.0),float(0.0))
-			static_transformStamped.transform.rotation.x = quat[0]
-			static_transformStamped.transform.rotation.y = quat[1]
-			static_transformStamped.transform.rotation.z = quat[2]
-			static_transformStamped.transform.rotation.w = quat[3]
-			self.pub_tf.publish(static_transformStamped)
+	def broadcast_configuration(self):
+		msg = TFMessage()
 
-			# Orange Tito Neri
-			static_transformStamped.child_frame_id = "RAS_TN_OR"
-			static_transformStamped.transform.translation.x = float(1.5)
-			static_transformStamped.transform.translation.y = float(0.0)
-			static_transformStamped.transform.translation.z = float(0.0)
-			quat = tf.transformations.quaternion_from_euler(
-						float(0.0),float(0.0),float(0.0))
-			static_transformStamped.transform.rotation.x = quat[0]
-			static_transformStamped.transform.rotation.y = quat[1]
-			static_transformStamped.transform.rotation.z = quat[2]
-			static_transformStamped.transform.rotation.w = quat[3]
-			self.pub_tf.publish(static_transformStamped)
+		now = self.get_clock().now()
+		# Dark-blue Tito Neri
+		msg.transforms[0] = TransformStamped()
+		msg.transforms[0].header.stamp = now.to_msg()
+		msg.transforms[0].header.frame_id = FORMATION_ID
+		msg.transforms[0].child_frame_id = "RAS_TN_DB"
+		msg.transforms[0].transform.translation.x = float(-1.5)
+		msg.transforms[0].transform.translation.y = float(1.5)
+		msg.transforms[0].transform.translation.z = float(0.0)
+		msg.transforms[0].transform.rotation.x = 0.0
+		msg.transforms[0].transform.rotation.y = 0.0
+		msg.transforms[0].transform.rotation.z = 0.0
+		msg.transforms[0].transform.rotation.w = 1.0
 
-			rate.sleep()
+		# Green Tito Neri
+		msg.transforms[1] = TransformStamped()
+		msg.transforms[1].header.stamp = now.to_msg()
+		msg.transforms[1].header.frame_id = FORMATION_ID
+		msg.transforms[1].child_frame_id = "RAS_TN_GR"
+		msg.transforms[1].transform.translation.x = float(-1.5)
+		msg.transforms[1].transform.translation.y = float(-1.5)
+		msg.transforms[1].transform.translation.z = float(0.0)
+		msg.transforms[1].transform.rotation.x = 0.0
+		msg.transforms[1].transform.rotation.y = 0.0
+		msg.transforms[1].transform.rotation.z = 0.0
+		msg.transforms[1].transform.rotation.w = 1.0
+
+		# Orange Tito Neri
+		msg.transforms[2] = TransformStamped()
+		msg.transforms[2].header.stamp = now.to_msg()
+		msg.transforms[2].header.frame_id = FORMATION_ID
+		msg.transforms[2].child_frame_id = "RAS_TN_OR"
+		msg.transforms[2].transform.translation.x = float(1.5)
+		msg.transforms[2].transform.translation.y = float(0.0)
+		msg.transforms[2].transform.translation.z = float(0.0)
+		msg.transforms[1].transform.rotation.x = 0.0
+		msg.transforms[1].transform.rotation.y = 0.0
+		msg.transforms[1].transform.rotation.z = 0.0
+		msg.transforms[1].transform.rotation.w = 1.0
+
+		# Publish message
+		self.pub_tf.publish(msg)
+
+def main(args=None):
+	rclpy.init(args=args)
+
+	node = FormationConfigurationBroadcasterNode()
+
+	# Start the nodes processing thread
+	rclpy.spin(node)
+
+	# at termination of the code (generally with ctrl-c) Destroy the node explicitly
+	node.destroy_node()
+	rclpy.shutdown()
+
 
 if __name__ == '__main__':
-	formationConfigurationBroadcaster1 = FormationConfigurationBroadcaster(args.formation_id[0])
-	formationConfigurationBroadcaster1.run()
+	main()
+	
