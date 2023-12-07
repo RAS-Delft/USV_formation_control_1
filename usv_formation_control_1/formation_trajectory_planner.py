@@ -12,39 +12,43 @@ Feel free to contact any contributors if you have any questions about this softw
 Bart Boogmans (bartboogmans@hotmail.com https://github.com/bartboogmans)
 """
 
-import rospy
+import rclpy
 import numpy as np
 import argparse
 import time
 import math
+from rclpy.node import Node
 from sensor_msgs.msg import NavSatFix
-from scipy import interpolate
 import pyproj
 from std_msgs.msg import Float32
-from geometry_msgs.msg import TransformStamped
+from tf2_ros import TFMessage
+# Import transform listener
+from tf2_ros import TransformListener
+import ras_ros_core_control_modules.tools.geometry_tools as ras_geometry_tools
 
-import ras_tf_lib.ras_tf_lib1  as rtf
-from ras_tf_lib.ras_tf_lib1 import rascolors
 
-parser = argparse.ArgumentParser(description='get input of formation ID')
-parser.add_argument('name', type=str, nargs=1,help='Identifier of the formation')
+
+parser = argparse.ArgumentParser(description='Formation trajectory planner - plans trajectory for a formation based on fixed speed and predefined hardcoded waypoints. A pose of formation is recalculated and broadcasted periodically.')
+parser.add_argument("objectID", type=str,help="set formation identifier")
+parser.add_argument("-r") # ROS2 arguments
 args, unknown = parser.parse_known_args()
 
+
+OBJECT_ID = args.objectID
 PERIOD_RECALCULATE_PATH = 40.0 # seconds
 PERIOD_MOVE_REF = 0.10 # seconds
 PERIOD_BROADCAST_STATUS = 10.0 # seconds
 geodesic = pyproj.Geod(ellps='WGS84')
-
 
 class Vessel():
 	"""
 	Container representing a vessel that is registered within a formation.
 	"""
 
-	def __init__(self,object_identifier:str,parent,formationPose_:TransformStamped=TransformStamped):
+	def __init__(self,object_identifier:str,parent_,formationPose_:TFMessage):
 		self.name = object_identifier
-		self.parent = parent
-		self.publisher_geo_reference = rospy.Publisher('/'+self.name+'/reference/geopos', NavSatFix, queue_size=1)
+		self.parent = parent_
+		self.publisher_geo_reference = self.parent.create_publisher(NavSatFix, self.name+'reference/geopos', 10)
 		self.formationPose = formationPose_
 
 	def calculate_ref(self):
@@ -60,7 +64,7 @@ class Vessel():
 		dx, dy, dz = [self.formationPose.transform.translation.x, self.formationPose.transform.translation.y, self.formationPose.transform.translation.z]
 
 		# Transform from quaternions to euler angles
-		droll, dpitch, dyaw = rtf.euler_from_quaternion(quat.x,quat.y,quat.z,quat.w)
+		droll, dpitch, dyaw = ras_geometry_tools.euler_from_quaternion(quat.x,quat.y,quat.z,quat.w)
 
 		pose_formation = self.parent.formation_ref_current
 
@@ -68,10 +72,10 @@ class Vessel():
 		yaw_= pose_formation[2] + dyaw
 
 		# Calculate the displacement [North,East] in meters
-		dNdE = np.matmul(rtf.R_surf(yaw_),np.array([dx,dy]))
+		dNdE = np.matmul(ras_geometry_tools.R_surf(yaw_),np.array([dx,dy]))
 		
 		# Calculate displacement lat/long (degrees) with respect to the formation CO
-		dlat, dlong = rtf.d_northeast_to_d_latlong(dNdE[0],dNdE[1],pose_formation[0])
+		dlat, dlong = ras_geometry_tools.d_northeast_to_d_latlong(dNdE[0],dNdE[1],pose_formation[0])
 
 		# Calculate the position of the reference by adding displacement to the formation CO
 		lat = pose_formation[0] + dlat
@@ -80,14 +84,14 @@ class Vessel():
 		return lat,long
 		
 		
-class FormationTrajectoryPlanner():
+class FormationTrajectoryPlannerNode(Node):
 	"""
 	Class that represents a formation with n vessels
 	Broadcasts formation CO and vessel references, moving along the specified path.
 	"""
-	def __init__(self,object_id:str):
-		self.name = object_id
-		
+	def __init__(self):
+		super.__init__('Formation_trajectory_planning_node')
+
 		# The waypoint array has latitude longitude and velocity reference, describing the rough outline of profile to follow.
 		self.waypoints = np.array([		[52.0014827166619,  4.37188818059471,   0.35],\
 										[52.001507485826,   4.37200619779137,   0.35],\
@@ -99,7 +103,6 @@ class FormationTrajectoryPlanner():
 										[52.0015355575287,  4.37179162107018,   0.35],\
 		])
 		
-		self.node = rospy.init_node(self.name + '_trajectory_planner', anonymous=False)
 		self.timestamp_recalculate_path = 0
 		self.timestamp_move_reference = 0
 		self.timestamp_broadcast_status = time.time()
@@ -107,19 +110,19 @@ class FormationTrajectoryPlanner():
 		# Collect information on the shape of the formation.
 		# This fills an array of Vessel objects (self.vessels[]) that is used to manage subscribers and store data for each vessel in the configuration. 
 		self.vessels = []
-		self.formation_subscriber = rospy.Subscriber('/'+self.name+'/reference/tf_vessels',TransformStamped,self.configuration_callback)
-		
+
+	
+		# Subscribe to the formation configuration
+		self.subscription = self.create_subscription(TFMessage,'/'+OBJECT_ID+'/reference/tf_vessels',self.configuration_callback,10)
+
 
 		# State tracking of the formation
 		self.formation_ref_current = self.waypoints[0]
 		self.waypoints_smoothed = []
-		self.publisher_formation_ref_pos = rospy.Publisher('/'+self.name+'/reference/geopos', NavSatFix, queue_size=1)
-		self.yaw_publisher = rospy.Publisher('/'+self.name+'/reference/yaw', Float32, queue_size=1)
+		self.publisher_formation_ref_pos = self.create_publisher(NavSatFix, 'reference/geopos', 10)
+		self.yaw_publisher = self.create_publisher(Float32, 'reference/yaw', 10)
 		self.i_refpos = 1
 		self.current_formation_velocity = 0.35
-
-
-
 
 		# diagnostics
 		self.tracker_moveref_callback = 0
@@ -134,10 +137,9 @@ class FormationTrajectoryPlanner():
 		self.formation_ref_current = self.waypoints[0]
 		# Select the first two columns (lat/long) of the waypoints array
 		waypoints = self.waypoints[:, [0, 1]]
-		#self.waypoints_smoothed = np.array(rtf.B_spline(waypoints))
 
 		# Smooth with chaikins corner cutting algorithm
-		self.waypoints_smoothed = rtf.chaikins_corner_cutting(waypoints,5)
+		self.waypoints_smoothed = ras_geometry_tools.chaikins_corner_cutting(waypoints,5)
 
 		# set the first waypoint as the current reference
 		# concatenate the waypoint array [lat,long] with the angle 0 reference
@@ -185,7 +187,7 @@ class FormationTrajectoryPlanner():
 		dE = np.sin(np.radians(fwd_azimuth)) * movelength
 
 		# transform to difference in geo coordinate
-		dlat, dlong = rtf.d_northeast_to_d_latlong(dN,dE,self.formation_ref_current[0])
+		dlat, dlong = ras_geometry_tools.d_northeast_to_d_latlong(dN,dE,self.formation_ref_current[0])
 		
 		# move the formation by adding the difference this timestep
 		self.formation_ref_current[0] += dlat
@@ -215,50 +217,8 @@ class FormationTrajectoryPlanner():
 			msg.latitude = lat
 			msg.longitude = long
 			vessel.publisher_geo_reference.publish(msg)
-
-
-	def run(self):
-		# Plan the trajectory of the formation by smoothing the waypoints 
-		self.replan_trajectory()
-		# Set the formation reference to the first waypoint
-		#self.formation_ref_current = np.concatenate((self.waypoints_smoothed[:,self.i_refpos], [0]), axis=0)
-
-		rate = rospy.Rate(1000)  # Hz
-		while not rospy.is_shutdown():
-			now = time.time()
-			self.tracker_num_mainloop_callback += 1
 			
-			if now - self.timestamp_recalculate_path > PERIOD_RECALCULATE_PATH:
-				self.timestamp_recalculate_path = now
-				pass # periodic replanning of path currently not implemented
-			
-			if now - self.timestamp_move_reference > PERIOD_MOVE_REF:
-				self.moveref(now - self.timestamp_move_reference)
-				self.timestamp_move_reference = now
-				self.broadcast_vessel_references()
-			
-			if now - self.timestamp_broadcast_status > PERIOD_BROADCAST_STATUS:
-				self.timestamp_broadcast_status = now
-
-				# Determine system frequencies rounded to two decimals
-				freq_moveref = round(self.tracker_moveref_callback / PERIOD_BROADCAST_STATUS, 2)
-				freq_mainloop = round(self.tracker_num_mainloop_callback / PERIOD_BROADCAST_STATUS, 2)
-
-				# Make strings of numbers in white if nonzero and red if zero
-				freq_moveref_str = str(freq_moveref) if freq_moveref > 0 else rascolors.FAIL + str(freq_moveref) + rascolors.NORMAL
-				freq_mainloop_str = str(freq_mainloop) if freq_mainloop > 0 else rascolors.FAIL + str(freq_mainloop) + rascolors.NORMAL
-
-				# Print system state
-				print('[' + self.name + '][trajectory planner] ' + 'Mainloop: ' + freq_mainloop_str + ' Hz, moveref_callback: ' + freq_moveref_str + ' Hz')
-
-				# Reset counters
-				self.tracker_moveref_callback = 0
-				self.tracker_num_mainloop_callback = 0
-
-		
-			rate.sleep()
-			
-	def configuration_callback(self, msg:TransformStamped):
+	def configuration_callback(self, msg:TFMessage):
 		#check if the vessel is already registered in the formation
 		match = False
 		for vessel in self.vessels:
@@ -273,6 +233,19 @@ class FormationTrajectoryPlanner():
 			print('['+self.name+'][trajectory planner] Adding new vessel to formation: ' + msg.child_frame_id)
 			self.vessels.append(Vessel(msg.child_frame_id,self,formationPose_=msg))
 
+def main(args=None):
+	rclpy.init(args=args)
+
+	node = FormationTrajectoryPlannerNode()
+
+	# Start the nodes processing thread
+	rclpy.spin(node)
+
+	# at termination of the code (generally with ctrl-c) Destroy the node explicitly
+	node.destroy_node()
+	rclpy.shutdown()
+
+
 if __name__ == '__main__':
-	formationTrajectoryPlanner1 = FormationTrajectoryPlanner(args.name[0])
-	formationTrajectoryPlanner1.run()
+	main()
+	
