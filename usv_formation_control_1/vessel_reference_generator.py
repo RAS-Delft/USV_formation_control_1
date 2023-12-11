@@ -41,7 +41,7 @@ class distancePIDController(PIDController):
 
 class NomotoFollowingDistanceControllerNode(Node):
 	def __init__(self):	
-		super().__init__('formation1_heading_velocity_reference generator')
+		super().__init__('formation1_reference_generator')
 
 		self.tlast_control = 0
 		self.pid_state_updated = 0
