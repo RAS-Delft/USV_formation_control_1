@@ -69,11 +69,51 @@ def generate_launch_description():
         )
         ld.add_action(thrust_allocator_node)
 
+        # Start velocity differentiator for each vessel
+        velocity_differentiator_node = Node(
+            package=['ras_ros_core_control_modules'],
+            executable='vel_differentiator',
+            name='velocity_differentiator',
+            namespace=vesselid,
+            arguments=[vesselid],
+            output='screen',
+            emulate_tty=True,
+        )
+        ld.add_action(velocity_differentiator_node)
+
+
     # Start formation configuration broadcaster
+    formation_config_broadcaster_node = Node(
+        package='usv_formation_control_1',
+        executable='formation_configuration_broadcaster_1',
+        name='formation_config_broadcaster',
+        namespace='formation1',
+        arguments=['formation1'],
+        output='screen',
+        emulate_tty=True,
+    )
+    ld.add_action(formation_config_broadcaster_node)
 
     # start formation trajectory planner
+    formation_trajectory_planner_node = Node(
+        package='usv_formation_control_1',
+        executable='formation_trajectory_planner',
+        name='formation_trajectory_planner',
+        namespace='formation1',
+        arguments=['formation1'],
+        output='screen',
+        emulate_tty=True,
+    )
+    ld.add_action(formation_trajectory_planner_node)
+    """
+    # Start Rviz2 launcher
+    rviz2launchdescription = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource([
+            get_package_share_directory('ras_urdf_common'),
+            '/launch/rviz_bringup.launch.py'])
 
-    # Start Rviz2
-
+        )
+    ld.add_action(rviz2launchdescription)
+    """
 
     return ld
