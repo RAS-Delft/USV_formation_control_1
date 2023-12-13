@@ -3,7 +3,6 @@ from launch_ros.actions import Node
 from launch.actions import IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from ament_index_python.packages import get_package_share_directory
-import ras_ros_core_control_modules.tools.display_tools as ras_display_tools
 
 def generate_launch_description():
     ld = LaunchDescription()
@@ -44,11 +43,11 @@ def generate_launch_description():
             emulate_tty=True,
         )
         ld.add_action(heading_controller_node)
-
+        
         # Start vessel surge velocity controller for each vessel
         surge_controller_node = Node(
             package=['ras_ros_core_control_modules'],
-            executable='surge_velocity_controller',
+            executable='surge_vel_controller',
             name='surge_velocity_controller',
             namespace=vesselid,
             arguments=[vesselid],
