@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 """
 Generates a vessels reference speed and heading by steering towards the reference state and controlling a fixed distance towards the target. 
@@ -27,7 +27,7 @@ parser.add_argument('distance', type=float,help='distance between ship and ref')
 parser.add_argument("-r") # ROS2 arguments
 args, unknown = parser.parse_known_args()
 
-REF_DISTANCE = args.distance[0]
+REF_DISTANCE = args.distance
 OBJECT_ID = args.name
 PERIOD_BROADCAST_STATUS = 5.0 # seconds
 PERIOD_RECALC_REFERENCES = 0.05 # seconds
@@ -53,32 +53,26 @@ class NomotoFollowingDistanceControllerNode(Node):
 		self.velocityPID.output_limits=[0.25,0.5]
 
 		# Communication
-		"""
- 		self.publisher_ref_heading = rospy.Publisher('/'+self.name+'/reference/yaw', Float32, queue_size=1)
-		self.publisher_distance = rospy.Publisher('/'+self.name+'/diagnostics/refposdistance', Float32, queue_size=1)
-		self.publisher_ref_velocity = rospy.Publisher('/'+self.name+'/reference/velocity', Float32MultiArray, queue_size=1)
-		self.reference_subscriber = rospy.Subscriber('/'+self.name+'/reference/geopos',NavSatFix,self.callback_reference)
-		self.state_geopos_subscriber = rospy.Subscriber('/'+self.name+'/state/geopos',NavSatFix,self.callback_state_geopos)
-		self.pid_status_publisher = rospy.Publisher('/'+self.name+'/diagnostics/distanceController/pid_status', Float32MultiArray, queue_size=1) 
-		"""
-		#self.publisher_filtered_distance = rospy.Publisher('/'+self.name+'/diagnostics/filtered_distance', Float32, queue_size=1)
-
+		## Inputs
 		self.reference_geopos_subscriber = self.create_subscription(NavSatFix,'reference/geopos',self.callback_reference,10)
-		self.state_geopos_subscriber = self.create_subscription(NavSatFix,'state/geopos',self.callback_state_geopos,10)
+		self.state_geopos_subscriber = self.create_subscription(NavSatFix,'telemetry/gnss/fix',self.callback_state_geopos,10)
 
-		self.publisher_ref_heading = self.create_publisher(Float32, 'reference/yaw', 10)
+		## Outputs
+		self.publisher_ref_heading = self.create_publisher(Float32, 'reference/heading', 10)
 		self.publisher_ref_velocity = self.create_publisher(Float32MultiArray, 'reference/velocity', 10)
-
-		self.publisher_distance = self.create_publisher(Float32, 'diagnostics/refposdistance', 10)
+		self.publisher_distance = self.create_publisher(Float32, 'diagnostics/ref_target_distance', 10)
 
 		# Timer for broadcasting output
 		self.timer_control = self.create_timer(MIN_PERIOD_CONTROL, self.run_controls)
 
 		# Diagnostics
+		self.timer_statistics_last = self.get_clock().now().nanoseconds/1e9
+		self.timer_broadcast_status = self.create_timer(PERIOD_BROADCAST_STATUS, self.print_statistics)
 		self.tracker_callback_publish_reference_heading = 0
 		self.tracker_callback_publish_reference_velocity = 0
 		self.tracker_callback_reference_geopos = 0
 		self.tracker_callback_state_geopos = 0
+		self.tracker_num_control_callback = 0
 
 		self.last_ref_update = None
 		self.last_ref_geopos_update = None
@@ -110,7 +104,7 @@ class NomotoFollowingDistanceControllerNode(Node):
 
 			# Broadcast messages
 			msg = Float32MultiArray()
-			msg.data = [ref_vel_surge,0,0]
+			msg.data = [ref_vel_surge,0.0,0.0]
 			self.publisher_ref_velocity.publish(msg)
 			
 			msg = Float32()
@@ -125,13 +119,13 @@ class NomotoFollowingDistanceControllerNode(Node):
 		""" On a single line, print the rates of all major callbacks in this script. """
 		
 		# Calculate passed time
-		now = self.get_clock().now()
+		now = self.get_clock().now().nanoseconds/1e9
 		passed_time = now - self.timer_statistics_last
 
 		# Calculate rates
-		rate_callback_run_controls = self.tracker_num_control_callback / passed_time.nanoseconds * 1e9
-		rate_callback_reference_geopos = self.tracker_callback_reference_geopos / passed_time.nanoseconds * 1e9
-		rate_callback_state_geopos = self.tracker_callback_state_geopos / passed_time.nanoseconds * 1e9
+		rate_callback_run_controls = self.tracker_num_control_callback / passed_time
+		rate_callback_reference_geopos = self.tracker_callback_reference_geopos / passed_time
+		rate_callback_state_geopos = self.tracker_callback_state_geopos / passed_time
 
 		# Format string
 		printstring = ras_display_tools.terminal_fleet_module_string(OBJECT_ID,['callback_run_controls',rate_callback_run_controls,'Hz'],['callback_reference_geopos',rate_callback_reference_geopos,'Hz'],['callback_state_geopos',rate_callback_state_geopos,'Hz'])

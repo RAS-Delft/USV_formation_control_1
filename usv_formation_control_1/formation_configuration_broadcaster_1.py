@@ -18,7 +18,6 @@ args, unknown = parser.parse_known_args()
 
 FORMATION_ID = args.formation_id
 
-
 class FormationConfigurationBroadcasterNode(Node):
 	def __init__(self):
 		super().__init__('formation_configuration_broadcaster_fixed')
@@ -30,8 +29,11 @@ class FormationConfigurationBroadcasterNode(Node):
 		msg = TFMessage()
 
 		now = self.get_clock().now()
+
+		# Add three TransformStamped objects to the message
+		msg.transforms = [TransformStamped() for i in range(3)]
+
 		# Dark-blue Tito Neri
-		msg.transforms[0] = TransformStamped()
 		msg.transforms[0].header.stamp = now.to_msg()
 		msg.transforms[0].header.frame_id = FORMATION_ID
 		msg.transforms[0].child_frame_id = "RAS_TN_DB"
@@ -44,7 +46,6 @@ class FormationConfigurationBroadcasterNode(Node):
 		msg.transforms[0].transform.rotation.w = 1.0
 
 		# Green Tito Neri
-		msg.transforms[1] = TransformStamped()
 		msg.transforms[1].header.stamp = now.to_msg()
 		msg.transforms[1].header.frame_id = FORMATION_ID
 		msg.transforms[1].child_frame_id = "RAS_TN_GR"
@@ -57,7 +58,6 @@ class FormationConfigurationBroadcasterNode(Node):
 		msg.transforms[1].transform.rotation.w = 1.0
 
 		# Orange Tito Neri
-		msg.transforms[2] = TransformStamped()
 		msg.transforms[2].header.stamp = now.to_msg()
 		msg.transforms[2].header.frame_id = FORMATION_ID
 		msg.transforms[2].child_frame_id = "RAS_TN_OR"

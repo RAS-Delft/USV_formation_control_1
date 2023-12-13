@@ -25,6 +25,7 @@ from tf2_ros import TFMessage
 # Import transform listener
 from tf2_ros import TransformListener
 import ras_ros_core_control_modules.tools.geometry_tools as ras_geometry_tools
+import ras_ros_core_control_modules.tools.display_tools as ras_display_tools
 
 
 
@@ -37,7 +38,7 @@ args, unknown = parser.parse_known_args()
 OBJECT_ID = args.objectID
 PERIOD_RECALCULATE_PATH = 40.0 # seconds
 PERIOD_MOVE_REF = 0.10 # seconds
-PERIOD_BROADCAST_STATUS = 10.0 # seconds
+PERIOD_BROADCAST_STATUS = 5.0 # seconds
 geodesic = pyproj.Geod(ellps='WGS84')
 
 class Vessel():
@@ -48,7 +49,7 @@ class Vessel():
 	def __init__(self,object_identifier:str,parent_,formationPose_:TFMessage):
 		self.name = object_identifier
 		self.parent = parent_
-		self.publisher_geo_reference = self.parent.create_publisher(NavSatFix, self.name+'reference/geopos', 10)
+		self.publisher_geo_reference = self.parent.create_publisher(NavSatFix, '/'+self.name+'/reference/geopos', 10)
 		self.formationPose = formationPose_
 
 	def calculate_ref(self):
@@ -90,7 +91,7 @@ class FormationTrajectoryPlannerNode(Node):
 	Broadcasts formation CO and vessel references, moving along the specified path.
 	"""
 	def __init__(self):
-		super.__init__('Formation_trajectory_planning_node')
+		super().__init__('Formation_trajectory_planning_node')
 
 		# The waypoint array has latitude longitude and velocity reference, describing the rough outline of profile to follow.
 		self.waypoints = np.array([		[52.0014827166619,  4.37188818059471,   0.35],\
@@ -103,9 +104,9 @@ class FormationTrajectoryPlannerNode(Node):
 										[52.0015355575287,  4.37179162107018,   0.35],\
 		])
 		
+		
 		self.timestamp_recalculate_path = 0
 		self.timestamp_move_reference = 0
-		self.timestamp_broadcast_status = time.time()
 		
 		# Collect information on the shape of the formation.
 		# This fills an array of Vessel objects (self.vessels[]) that is used to manage subscribers and store data for each vessel in the configuration. 
@@ -115,18 +116,26 @@ class FormationTrajectoryPlannerNode(Node):
 		# Subscribe to the formation configuration
 		self.subscription = self.create_subscription(TFMessage,'/'+OBJECT_ID+'/reference/tf_vessels',self.configuration_callback,10)
 
-
 		# State tracking of the formation
 		self.formation_ref_current = self.waypoints[0]
 		self.waypoints_smoothed = []
 		self.publisher_formation_ref_pos = self.create_publisher(NavSatFix, 'reference/geopos', 10)
-		self.yaw_publisher = self.create_publisher(Float32, 'reference/yaw', 10)
+		self.yaw_publisher = self.create_publisher(Float32, 'reference/heading', 10)
 		self.i_refpos = 1
 		self.current_formation_velocity = 0.35
 
+		# Set up timer for main loop that moves the formation reference
+		self.timestamp_move_reference = time.time()
+		self.replan_trajectory()
+		self.timer_moveref = self.create_timer(PERIOD_MOVE_REF, self.moveref)
+
+		# Set up timer for main loop that recalculates the path
+		#self.timer_recalculate_path = self.create_timer(PERIOD_RECALCULATE_PATH, self.replan_trajectory)
+
 		# diagnostics
+		self.timer_print_statistics = self.create_timer(PERIOD_BROADCAST_STATUS, self.print_statistics)
+		self.timestamp_broadcast_status = self.get_clock().now().nanoseconds/1e9
 		self.tracker_moveref_callback = 0
-		self.tracker_num_mainloop_callback = 0
 				
 	def replan_trajectory(self):
 		"""
@@ -145,19 +154,22 @@ class FormationTrajectoryPlannerNode(Node):
 		# concatenate the waypoint array [lat,long] with the angle 0 reference
 		self.formation_ref_current = np.concatenate((self.waypoints_smoothed[0], [0]))
 		
-	
-	def moveref(self,dt:float):
+	def moveref(self):
 		"""
 		Moves the formation reference a little step forward
 		
 		Args:
-			dt [float] timestep in seconds
+			none
 
 		Returns:
 			none
 	
 		"""		
-		## Find the distance to be travvelled during this timestep according to reference velocity
+		# Calculate the time passed since the last call of this function
+		now = time.time()
+		dt = now - self.timestamp_move_reference
+
+		## Find the distance to be travelled during this timestep according to reference velocity
 		movelength = dt*self.current_formation_velocity
 		if dt >PERIOD_MOVE_REF*100: # in case of severe delay or startup behaviour
 			movelength = 0.0
@@ -194,8 +206,7 @@ class FormationTrajectoryPlannerNode(Node):
 		self.formation_ref_current[1] += dlong
 		self.formation_ref_current[2] = math.radians(fwd_azimuth)
 
-
-		# send 
+		# Broadcast formation reference
 		msg = NavSatFix()
 		msg.latitude = self.formation_ref_current[0]
 		msg.longitude = self.formation_ref_current[1]
@@ -205,7 +216,12 @@ class FormationTrajectoryPlannerNode(Node):
 		msg.data = self.formation_ref_current[2]
 		self.yaw_publisher.publish(msg)
 
+		# Broadcast individual vessel references
+		self.broadcast_vessel_references()
+
+		# Finishing up: Set trackers and timesteps
 		self.tracker_moveref_callback += 1
+		self.timestamp_move_reference = now
 	
 	def broadcast_vessel_references(self):
 		for vessel in self.vessels:
@@ -221,17 +237,42 @@ class FormationTrajectoryPlannerNode(Node):
 	def configuration_callback(self, msg:TFMessage):
 		#check if the vessel is already registered in the formation
 		match = False
-		for vessel in self.vessels:
-			if vessel.name == msg.child_frame_id:
-				# vessel is already registered
-				match = True
-				vessel.formationPose = msg
 
-		if not match:
-			# Vessel is not yet registered
-			# Add new vessel to list
-			print('['+self.name+'][trajectory planner] Adding new vessel to formation: ' + msg.child_frame_id)
-			self.vessels.append(Vessel(msg.child_frame_id,self,formationPose_=msg))
+		
+		for transform in msg.transforms:
+			match = False
+			for vessel in self.vessels:
+				if vessel.name == transform.child_frame_id:
+					match = True
+
+					# Overwrite the formationPose field of the vessel
+					vessel.formationPose = transform 
+			
+			if not match:
+				# Vessel is not yet registered
+				# Add new vessel to list
+				print('['+OBJECT_ID+'][trajectory planner] Adding new vessel to formation: ' + transform.child_frame_id)
+				self.vessels.append(Vessel(transform.child_frame_id,self,formationPose_=transform))
+
+	def print_statistics(self):
+		""" On a single line, print the rates of all major callbacks in this script. """
+
+		# Calculate passed time
+		now = self.get_clock().now().nanoseconds/1e9
+		passed_time = now - self.timestamp_broadcast_status
+
+		# Calculate rates up to two decimals
+		rate_moveref_callback = round(self.tracker_moveref_callback/passed_time,2)
+
+		# Format information to string
+		printstring = ras_display_tools.terminal_fleet_module_string(OBJECT_ID, ['moveref_callback',rate_moveref_callback,'hz'])
+
+		# Print
+		self.get_logger().info(printstring)
+
+		# Reset trackers
+		self.tracker_moveref_callback = 0
+		self.timestamp_broadcast_status = now
 
 def main(args=None):
 	rclpy.init(args=args)
@@ -248,4 +289,3 @@ def main(args=None):
 
 if __name__ == '__main__':
 	main()
-	
