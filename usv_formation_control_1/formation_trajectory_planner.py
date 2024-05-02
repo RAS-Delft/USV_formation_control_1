@@ -265,7 +265,7 @@ class FormationTrajectoryPlannerNode(Node):
 		rate_moveref_callback = round(self.tracker_moveref_callback/passed_time,2)
 
 		# Format information to string
-		printstring = ras_display_tools.terminal_fleet_module_string(OBJECT_ID, ['moveref_callback',rate_moveref_callback,'hz'])
+		printstring = ras_display_tools.terminal_fleet_module_string(self.get_namespace()[1:], ['moveref_callback',rate_moveref_callback,'hz'])
 
 		# Print
 		self.get_logger().info(printstring)

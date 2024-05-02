@@ -128,7 +128,7 @@ class NomotoFollowingDistanceControllerNode(Node):
 		rate_callback_state_geopos = self.tracker_callback_state_geopos / passed_time
 
 		# Format string
-		printstring = ras_display_tools.terminal_fleet_module_string(OBJECT_ID,['callback_run_controls',rate_callback_run_controls,'Hz'],['callback_reference_geopos',rate_callback_reference_geopos,'Hz'],['callback_state_geopos',rate_callback_state_geopos,'Hz'])
+		printstring = ras_display_tools.terminal_fleet_module_string(self.get_namespace()[1:],['callback_run_controls',rate_callback_run_controls,'Hz'],['callback_reference_geopos',rate_callback_reference_geopos,'Hz'],['callback_state_geopos',rate_callback_state_geopos,'Hz'])
 
 		# Print
 		self.get_logger().info(printstring)
