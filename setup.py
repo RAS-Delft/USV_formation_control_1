@@ -13,10 +13,6 @@ setup(
         ('share/ament_index/resource_index/packages',['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
 
-
-        # import python package
-        (os.path.join('lib', package_name), glob(os.path.join(package_name, '*.py'))),
-
         # import all launch files
         (os.path.join('share', package_name, 'launch'), glob(os.path.join('launch', '*.launch.py'))),
 
