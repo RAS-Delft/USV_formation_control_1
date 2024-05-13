@@ -9,17 +9,25 @@ def generate_launch_description(vesselids = ['RAS_TN_DB','RAS_TN_OR','RAS_TN_GR'
 
     # Print: start formation control launch generation:
     print("Start formation control launch generation")
-
-    # Bring up the simulation fleet stack
-    vesselnodes = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource([
-            get_package_share_directory('ras_ros_core_control_modules'),
-            '/fleet_sim.launch.py'])
-        )
-    ld.add_action(vesselnodes)
+    foo_dir = get_package_share_directory('ras_ros_core_control_modules')
+    included_launch = IncludeLaunchDescription(PythonLaunchDescriptionSource(foo_dir + '/fleet_geo_utils.launch.py'))
+                
+    ld.add_action(included_launch)
 
     # Bring up the control stack for each vessel
     for vesselid in vesselids:
+        turtleboat_node = Node(
+            package='turtleboat',
+            executable='turtleboatmain',
+            name='turtleboat_sim',
+            namespace=vesselid,
+            parameters=[{'rate_publish_position':20.0},
+                        {'rate_publish_heading':17.0}],
+            output='screen',
+            emulate_tty=True,
+        )
+        ld.add_action(turtleboat_node)
+
         # Start vessel reference generator for each vessel
         ref_generator_node = Node(
             package='usv_formation_control_1',
@@ -31,7 +39,7 @@ def generate_launch_description(vesselids = ['RAS_TN_DB','RAS_TN_OR','RAS_TN_GR'
             emulate_tty=True,
         )
         ld.add_action(ref_generator_node)
-
+        
         # Start vessel heading controller for each vessel
         heading_controller_node = Node(
             package=['ras_ros_core_control_modules'],
@@ -80,7 +88,6 @@ def generate_launch_description(vesselids = ['RAS_TN_DB','RAS_TN_OR','RAS_TN_GR'
         )
         ld.add_action(velocity_differentiator_node)
 
-
     # Start formation configuration broadcaster
     formation_config_broadcaster_node = Node(
         package='usv_formation_control_1',
@@ -104,7 +111,7 @@ def generate_launch_description(vesselids = ['RAS_TN_DB','RAS_TN_OR','RAS_TN_GR'
         emulate_tty=True,
     )
     ld.add_action(formation_trajectory_planner_node)
-    """
+
     # Start Rviz2 launcher
     rviz2launchdescription = IncludeLaunchDescription(
         PythonLaunchDescriptionSource([
@@ -113,6 +120,6 @@ def generate_launch_description(vesselids = ['RAS_TN_DB','RAS_TN_OR','RAS_TN_GR'
 
         )
     ld.add_action(rviz2launchdescription)
-    """
+    
 
     return ld
