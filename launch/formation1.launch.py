@@ -4,11 +4,11 @@ from launch.actions import IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from ament_index_python.packages import get_package_share_directory
 
-def generate_launch_description():
+def generate_launch_description(vesselids = ['RAS_TN_DB','RAS_TN_OR','RAS_TN_GR']):
     ld = LaunchDescription()
 
-    # Define the vesselids that are used in this formation control stack
-    vesselids = ['RAS_TN_DB','RAS_TN_OR','RAS_TN_GR']
+    # Print: start formation control launch generation:
+    print("Start formation control launch generation")
 
     # Bring up the simulation fleet stack
     vesselnodes = IncludeLaunchDescription(
